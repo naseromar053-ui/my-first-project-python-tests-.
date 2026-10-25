@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>تطبيق نقل الملفات عبر الـ ID</title>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 440px;
+      background: #1e293b;
+      padding: 20px;
+      border-radius: 16px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      margin-top: 20px;
+    }
+    h2 { text-align: center; color: #38bdf8; font-size: 22px; margin: 0 0 14px; }
+    .box {
+      background: #0f172a;
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 15px;
+      border: 1px solid #334155;
+    }
+    input, button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 8px;
+      border-radius: 8px;
+      border: none;
+      font-size: 16px;
+      box-sizing: border-box;
+      font-family: inherit;
+    }
+    input {
+      background: #1e293b;
+      color: #fff;
+      border: 1px solid #475569;
+    }
+    input[type="file"] { padding: 8px; font-size: 14px; }
+    button {
+      background: #3b82f6;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #2563eb; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .id-row { display: flex; align-items: center; gap: 8px; }
+    .id-row h3 {
+      color: #34d399;
+      word-break: break-all;
+      margin: 0;
+      flex: 1;
+      font-size: 15px;
+      direction: ltr;
+      text-align: left;
+    }
+    .id-row button {
+      width: auto;
+      padding: 8px 14px;
+      margin: 0;
+      font-size: 14px;
+      background: #475569;
+      white-space: nowrap;
+    }
+    .id-row button:hover { background: #64748b; }
+    #status { text-align: center; margin-top: 12px; font-weight: bold; color: #fbbf24; min-height: 22px; }
+    #progress-wrap {
+      height: 8px;
+      background: #334155;
+      border-radius: 99px;
+      overflow: hidden;
+      margin-top: 10px;
+      display: none;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 0;
+      background: #10b981;
+      transition: width 0.1s linear;
+    }
+    .file-box {
+      margin-top: 12px;
+      padding: 10px;
+      background: #065f46;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .file-box p { margin: 0 0 6px; font-size: 14px; word-break: break-all; }
+    .file-box a { color: #fff; font-weight: bold; text-decoration: underline; }
+    .file-box img { max-width: 100%; border-radius: 6px; margin-top: 8px; display: block; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h2>🚀 تطبيق نقل الملفات (P2P)</h2>
+
+    <!-- الـ ID الخاص بك -->
+    <div class="box">
+      <label>الـ ID الخاص بك:</label>
+      <div class="id-row">
+        <h3 id="my-id">جاري التوليد...</h3>
+        <button onclick="copyId()">نسخ</button>
+      </div>
+    </div>
+
+    <!-- الاتصال بجهاز آخر -->
+    <div class="box">
+      <label>أدخل ID الجهاز الآخر:</label>
+      <input type="text" id="target-id" placeholder="الصق الـ ID هنا..." dir="ltr">
+      <button id="connect-btn" onclick="connectToPeer()">اتصال</button>
+    </div>
+
+    <!-- إرسال الملفات -->
+    <div class="box">
+      <label>اختر ملفاً أو أكثر للإرسال:</label>
+      <input type="file" id="file-input" multiple>
+      <button id="send-btn" onclick="sendFiles()" style="background:#10b981;">إرسال الملف</button>
+    </div>
+
+    <div id="status">في انتظار الاتصال...</div>
+    <div id="progress-wrap"><div id="progress-bar"></div></div>
+    <div id="incoming-files"></div>
+  </div>
+
+  <script>
+    /* ============ الإعدادات ============ */
+    const CHUNK_SIZE = 16 * 1024;        // حجم القطعة (16KB آمن لكل المتصفحات)
+    const BUFFER_LIMIT = 1024 * 1024;    // حد الضغط العكسي: 1MB
+
+    /* ============ العناصر ============ */
+    const $ = (id) => document.getElementById(id);
+    const myIdEl   = $('my-id');
+    const statusEl = $('status');
+    const progWrap = $('progress-wrap');
+    const progBar  = $('progress-bar');
+    const incomingEl = $('incoming-files');
+
+    /* ============ الحالة ============ */
+    let conn = null;
+    let myPeerId = '';
+
+    /* ============ إنشاء الـ Peer ============ */
+    // ملاحظة: new Peer() يستخدم سيرفر PeerJS السحابي المجاني.
+    // إذا كان محجوباً عندك، استخدم خيارات host/port/secure لسيرفرك الخاص.
+    const peer = new Peer();
+
+    peer.on('open', (id) => {
+      myPeerId = id;
+      myIdEl.textContent = id;
+      setStatus('جاهز — شارك الـ ID أو اتصل بجهاز آخر', '#34d399');
+    });
+
+    peer.on('error', (err) => {
+      const messages = {
+        'peer-unavailable': 'الـ ID غير موجود أو الطرف الآخر غير متصل',
+        'network':         'مشكلة في الشبكة — تحقق من اتصالك',
+        'unavailable-id':  'هذا الـ ID مستخدم بالفعل',
+        'browser-incompatible': 'المتصفح غير مدعوم',
+        'server-error':    'خطأ في سيرفر الإشارات، أعد المحاولة',
+        'webrtc':          'فشل في WebRTC — قد يكون بسبب جدار حماية'
+      };
+      setStatus('⚠️ ' + (messages[err.type] || ('خطأ: ' + err.type)), '#f87171');
+      console.error('[PeerJS error]', err);
+    });
+
+    peer.on('disconnected', () => {
+      // إعادة الاتصال بسيرفر الإشارات تلقائياً
+      try { peer.reconnect(); } catch (e) {}
+    });
+
+    peer.on('connection', (c) => {
+      attachConnection(c, 'تم استلام اتصال');
+    });
+
+    /* ============ الاتصال ============ */
+    function connectToPeer() {
+      const id = $('target-id').value.trim();
+      if (!id) return alert('الرجاء كتابة الـ ID أولاً');
+      if (id === myPeerId) return alert('هذا هو الـ ID الخاص بك!');
+      if (conn && conn.open) return alert('أنت متصل بالفعل بجهاز');
+
+      setStatus('جاري الاتصال...');
+      const c = peer.connect(id, { reliable: true, serialization: 'binary' });
+      attachConnection(c, 'متصل بالجهاز');
+    }
+
+    function attachConnection(c, label) {
+      // إغلاق أي اتصال قديم
+      if (conn && conn !== c && conn.open) {
+        try { conn.close(); } catch (e) {}
+      }
+      conn = c;
+
+      c.on('open', () => {
+        setStatus(label + ' — جاهز لنقل الملفات ✅', '#34d399');
+        $('send-btn').disabled = false;
+      });
+
+      c.on('data', handleIncomingData);
+
+      c.on('close', () => {
+        setStatus('انتهى الاتصال بالطرف الآخر', '#f87171');
+        $('send-btn').disabled = true;
+        if (conn === c) conn = null;
+      });
+
+      c.on('error', (e) => {
+        setStatus('خطأ في الاتصال', '#f87171');
+        console.error('[Connection error]', e);
+      });
+    }
+
+    /* ============ الاستقبال ============ */
+    const incoming = new Map(); // id → { name, mime, size, chunks, received }
+
+    function handleIncomingData(data) {
+      if (!data || typeof data !== 'object' || !data.type) return;
+
+      switch (data.type) {
+        case 'file-start': {
+          incoming.set(data.id, {
+            name: data.name,
+            mime: data.mime || 'application/octet-stream',
+            size: data.size,
+            chunks: [],
+            received: 0
+          });
+          setStatus(`⏳ جاري استلام: ${data.name}`, '#38bdf8');
+          break;
+        }
+
+        case 'file-chunk': {
+          const f = incoming.get(data.id);
+          if (!f) return;
+          f.chunks.push(data.chunk);
+          f.received += data.chunk.byteLength ?? data.chunk.length ?? 0;
+          if (f.size > 0) {
+            const pct = Math.floor((f.received / f.size) * 100);
+            setStatus(`⏳ استلام ${f.name} — ${pct}%`, '#38bdf8');
+          }
+          break;
+        }
+
+        case 'file-end': {
+          const f = incoming.get(data.id);
+          if (!f) return;
+          incoming.delete(data.id);
+
+          const blob = new Blob(f.chunks, { type: f.mime });
+          addReceivedFile(f.name, blob, f.size);
+          setStatus('✅ تم استلام الملف بنجاح', '#34d399');
+          break;
+        }
+      }
+    }
+
+    function addReceivedFile(name, blob, size) {
+      const url = URL.createObjectURL(blob);
+
+      const box = document.createElement('div');
+      box.className = 'file-box';
+
+      const p = document.createElement('p');
+      p.textContent = `📥 ${name} (${formatSize(size)})`;  // textContent = آمن ضد XSS
+      box.appendChild(p);
+
+      // معاينة الصور
+      if (blob.type.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = name;
+        box.appendChild(img);
+      }
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.textContent = 'اضغط هنا للتحميل';
+      box.appendChild(a);
+
+      incomingEl.prepend(box);
+    }
+
+    /* ============ الإرسال ============ */
+    async function sendFiles() {
+      const files = Array.from($('file-input').files);
+
+      if (!files.length) return alert('اختر ملفاً أولاً!');
+      if (!conn || !conn.open) return alert('يجب الاتصال بجهاز آخر أولاً!');
+
+      $('send-btn').disabled = true;
+      progWrap.style.display = 'block';
+
+      try {
+        for (let i = 0; i < files.length; i++) {
+          await sendOneFile(files[i], i, files.length);
+        }
+        setStatus('✅ تم إرسال كل الملفات بنجاح', '#34d399');
+      } catch (err) {
+        console.error(err);
+        setStatus('❌ فشل الإرسال — قد يكون الاتصال انقطع', '#f87171');
+      } finally {
+        progBar.style.width = '0%';
+        progWrap.style.display = 'none';
+        $('send-btn').disabled = false;
+      }
+    }
+
+    async function sendOneFile(file, index, total) {
+      const id = (crypto.randomUUID && crypto.randomUUID()) ||
+                 (Date.now() + '-' + Math.random().toString(36).slice(2));
+
+      // 1) إعلان بداية الملف
+      conn.send({
+        type: 'file-start',
+        id,
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        size: file.size
+      });
+
+      // 2) إرسال القطع مع ضغط عكسي
+      let offset = 0;
+      while (offset < file.size) {
+        if (!conn || !conn.open) throw new Error('الاتصال مغلق');
+
+        await waitForBuffer();
+
+        const slice = file.slice(offset, offset + CHUNK_SIZE);
+        const buffer = await slice.arrayBuffer();
+
+        conn.send({ type: 'file-chunk', id, chunk: buffer });
+        offset += buffer.byteLength;
+
+        const pct = Math.floor((offset / file.size) * 100);
+        progBar.style.width = pct + '%';
+        setStatus(
+          `📤 إرسال ${file.name} — ${pct}%` + (total > 1 ? ` (${index + 1}/${total})` : ''),
+          '#38bdf8'
+        );
+      }
+
+      // 3) إعلان نهاية الملف
+      conn.send({ type: 'file-end', id });
+    }
+
+    // انتظار حتى ينخفض حجم البيانات المعلّقة في قناة WebRTC
+    function waitForBuffer() {
+      return new Promise((resolve) => {
+        const dc = conn && conn.dataChannel;
+        if (!dc) return resolve();
+
+        const check = () => {
+          if (!conn || !conn.open) return resolve();
+          if (dc.bufferedAmount < BUFFER_LIMIT) return resolve();
+          setTimeout(check, 30);
+        };
+        check();
+      });
+    }
+
+    /* ============ أدوات مساعدة ============ */
+    function setStatus(msg, color) {
+      statusEl.textContent = msg;
+      statusEl.style.color = color || '#fbbf24';
+    }
+
+    function formatSize(bytes) {
+      if (!bytes && bytes !== 0) return '';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let i = 0, n = bytes;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    async function copyId() {
+      if (!myPeerId) return;
+      try {
+        await navigator.clipboard.writeText(myPeerId);
+        const old = myIdEl.textContent;
+        myIdEl.textContent = '✅ تم النسخ!';
+        setTimeout(() => { myIdEl.textContent = old; }, 1000);
+      } catch (e) {
+        alert('تعذّر النسخ تلقائياً، انسخ الـ ID يدوياً:\n' + myPeerId);
+      }
+    }
+
+    // تعطيل زر الإرسال حتى يتم الاتصال
+    $('send-btn').disabled = true;
+  </script>
+
+</body>
+</html>
